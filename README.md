@@ -23,7 +23,7 @@ biometric identity service.
 The standard-library core is cross-platform. Apple Silicon is the physically
 verified development platform. NVIDIA CUDA, Windows OpenVINO, and Vulkan
 profiles are implemented but must be accepted on target hardware before making
-performance claims.
+performance claims. See the dated [macOS v0.2 validation report](docs/validation-macos.md).
 
 ## Install
 

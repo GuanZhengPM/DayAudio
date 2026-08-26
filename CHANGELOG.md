@@ -9,3 +9,5 @@
 - Evidence windows, day bundles, summary packets, and citation validation.
 - Privacy-safe logging, generated fixtures, cross-platform core CI, and release
   documentation.
+- Physical Apple-Silicon E2E and socket-blocked offline validation, documented
+  with model and fixture hashes.

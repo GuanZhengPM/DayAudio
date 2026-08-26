@@ -1,5 +1,8 @@
 # v0.2 acceptance
 
+The dated physical-Mac result is recorded in
+[validation-macos.md](validation-macos.md).
+
 ## Core
 
 - A duplicate source hash is ingested once.
