@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from dayaudio.cas import ContentAddressedStore
-from dayaudio.ingest import ProbeError, filename_recording_time, ingest_file, parse_ffprobe
+from dayaudio.ingest import (
+    ProbeError,
+    filename_recording_time,
+    ingest_file,
+    parse_ffprobe,
+    probe_audio,
+)
 from dayaudio.storage import Storage
 
 
@@ -83,3 +89,28 @@ def test_probe_rejects_non_audio_payload(tmp_path: Path) -> None:
             {"streams": [{"codec_type": "video", "codec_name": "h264"}]},
             source_path=tmp_path / "video.mp4",
         )
+
+
+def test_probe_uses_utf8_for_chinese_metadata(tmp_path: Path) -> None:
+    payload = ffprobe_payload(creation_time="2026-08-25T10:20:30+08:00")
+    payload["format"]["tags"]["title"] = "中文录音"
+
+    def runner(command, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "strict"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(payload, ensure_ascii=False),
+            stderr="",
+        )
+
+    probe = probe_audio(tmp_path / "中文录音.m4a", runner=runner)
+    assert probe.recording_start == "2026-08-25T02:20:30Z"
+
+
+def test_probe_rejects_non_utf8_output(tmp_path: Path) -> None:
+    def runner(*_args, **_kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    with pytest.raises(ProbeError, match="not valid UTF-8"):
+        probe_audio(tmp_path / "recording.m4a", runner=runner)

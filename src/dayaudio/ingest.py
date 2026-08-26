@@ -253,7 +253,7 @@ def probe_audio(
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict",
             check=False,
             timeout=timeout,
         )
@@ -261,6 +261,8 @@ def probe_audio(
         raise ProbeError(f"ffprobe executable not found: {ffprobe_bin}") from error
     except subprocess.TimeoutExpired as error:
         raise ProbeError(f"ffprobe timed out: {source}") from error
+    except UnicodeDecodeError as error:
+        raise ProbeError(f"ffprobe returned output that is not valid UTF-8: {source}") from error
     if completed.returncode != 0:
         stderr = str(getattr(completed, "stderr", "")).strip()
         raise ProbeError(f"ffprobe failed for {source}: {stderr or f'exit {completed.returncode}'}")
