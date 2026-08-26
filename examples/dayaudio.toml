@@ -1,0 +1,17 @@
+[workspace]
+home = "~/.dayaudio"
+
+[pipeline]
+profile = "auto"
+asr_backend = "sensevoice"
+core_seconds = 300.0
+context_seconds = 1.0
+summary_chunk_seconds = 900.0
+
+[runtime]
+task_lease_seconds = 900.0
+max_attempts = 3
+offline = false
+
+[privacy]
+log_text = false
