@@ -225,7 +225,7 @@ def decode_audio(
                 "ffmpeg output does not match requested PCM format "
                 f"({info.sample_rate} Hz, {info.channels} ch, {info.sample_width} bytes)"
             )
-        with temporary_path.open("rb") as handle:
+        with temporary_path.open("r+b") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary_path, output_path)
         _fsync_directory(output_path.parent)

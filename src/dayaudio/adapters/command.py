@@ -387,6 +387,8 @@ class CommandAsrBackend:
             )
             environment = os.environ.copy()
             environment.update(self.config.environment)
+            environment.setdefault("PYTHONIOENCODING", "utf-8")
+            environment.setdefault("PYTHONUTF8", "1")
             if self.config.offline:
                 environment.setdefault("HF_HUB_OFFLINE", "1")
                 environment.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -398,6 +400,8 @@ class CommandAsrBackend:
                     env=environment,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="strict",
                     timeout=self.config.timeout_seconds,
                     check=False,
                 )

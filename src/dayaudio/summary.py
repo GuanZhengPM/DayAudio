@@ -415,10 +415,14 @@ class CommandSummaryBackend:
     def summarize(self, request: SummaryRequest) -> SummaryResult:
         environment = os.environ.copy()
         environment.update(self.environment)
+        environment.setdefault("PYTHONIOENCODING", "utf-8")
+        environment.setdefault("PYTHONUTF8", "1")
         completed = subprocess.run(
             self.command,
             input=json.dumps(request.to_dict(), ensure_ascii=False),
             text=True,
+            encoding="utf-8",
+            errors="strict",
             capture_output=True,
             timeout=self.timeout_seconds,
             check=False,

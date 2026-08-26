@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import shutil
 import struct
 import sys
 import wave
 from pathlib import Path
+
+import pytest
 
 from dayaudio.cli import main
 from dayaudio.config import Settings
@@ -24,6 +27,10 @@ def _wav(path: Path, seconds: float = 2.0) -> None:
         )
 
 
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="public CLI E2E requires FFmpeg and FFprobe",
+)
 def test_public_command_e2e(tmp_path: Path) -> None:
     home = tmp_path / "home"
     audio = tmp_path / "fixture.wav"
