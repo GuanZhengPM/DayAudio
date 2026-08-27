@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 from dayaudio.bundles import read_day_bundles, read_summary_packets
 from dayaudio.cas import atomic_write_text
 from dayaudio.evidence import evidence_by_id, select_revisions_from_storage
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 from dayaudio.summary import (
     SummaryRequest,
     summary_result_from_dict,
@@ -19,6 +20,12 @@ from dayaudio.workspace import Workspace, atomic_json, read_json
 
 EVIDENCE_SCHEMA = "dayaudio.evidence.v1"
 SUMMARY_ARTIFACT_SCHEMA = "dayaudio.summary.artifact.v1"
+
+
+def _glob_paths(directory: Path, pattern: str) -> Iterable[Path]:
+    filesystem_directory = filesystem_tree_path(directory)
+    for item in filesystem_directory.glob(pattern):
+        yield directory / item.relative_to(filesystem_directory)
 
 
 def write_evidence(path: str | Path, windows: Iterable[EvidenceWindow]) -> Path:
@@ -167,12 +174,12 @@ def validate_workspace(workspace: Workspace) -> dict[str, Any]:
             workspace.recording_time_overrides_path,
             workspace.owner_profile_path,
         )
-        if path.exists()
+        if filesystem_path(path).exists()
     ]
-    if workspace.speaker_dir.exists():
-        required_paths.extend(workspace.speaker_dir.glob("*.json"))
-    if workspace.summary_dir.exists():
-        required_paths.extend(workspace.summary_dir.glob("*.*"))
+    if filesystem_path(workspace.speaker_dir).exists():
+        required_paths.extend(_glob_paths(workspace.speaker_dir, "*.json"))
+    if filesystem_path(workspace.summary_dir).exists():
+        required_paths.extend(_glob_paths(workspace.summary_dir, "*.*"))
     unregistered = [
         str(path)
         for path in required_paths
@@ -188,7 +195,7 @@ def validate_workspace(workspace: Workspace) -> dict[str, Any]:
     )
 
     evidence: tuple[EvidenceWindow, ...] = ()
-    if workspace.evidence_path.exists():
+    if filesystem_path(workspace.evidence_path).exists():
         try:
             evidence = read_evidence(workspace.evidence_path)
             known_segments = {
@@ -213,7 +220,7 @@ def validate_workspace(workspace: Workspace) -> dict[str, Any]:
             checks.append({"name": "evidence_segments", "valid": False, "error": type(exc).__name__})
 
     bundles = ()
-    if workspace.bundles_path.exists():
+    if filesystem_path(workspace.bundles_path).exists():
         try:
             bundles = read_day_bundles(workspace.bundles_path)
             known = {item.evidence_window_id for item in evidence}
@@ -227,7 +234,7 @@ def validate_workspace(workspace: Workspace) -> dict[str, Any]:
         except (OSError, ValueError, TypeError, KeyError) as exc:
             checks.append({"name": "bundle_evidence", "valid": False, "error": type(exc).__name__})
 
-    if workspace.packets_path.exists():
+    if filesystem_path(workspace.packets_path).exists():
         try:
             packets = read_summary_packets(workspace.packets_path)
             known_bundles = {item.bundle_id for item in bundles}
@@ -249,8 +256,8 @@ def validate_workspace(workspace: Workspace) -> dict[str, Any]:
     summary_count = 0
     summary_failures: list[dict[str, Any]] = []
     evidence_map = evidence_by_id(evidence)
-    if workspace.summary_dir.exists():
-        for path in sorted(workspace.summary_dir.glob("*.json")):
+    if filesystem_path(workspace.summary_dir).exists():
+        for path in sorted(_glob_paths(workspace.summary_dir, "*.json")):
             summary_count += 1
             try:
                 payload = read_json(path)

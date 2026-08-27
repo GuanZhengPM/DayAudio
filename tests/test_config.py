@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from dayaudio.config import Settings, load_settings, write_default_config
+from dayaudio.paths import filesystem_path
 
 
 def test_settings_layout_and_digest(tmp_path: Path):
@@ -38,3 +39,13 @@ def test_explicit_home_overrides_toml_home(tmp_path: Path):
     path.write_text('[workspace]\nhome = "/from-toml"\n', encoding="utf-8")
     explicit = tmp_path / "explicit"
     assert load_settings(path, home=explicit).home == explicit.resolve()
+
+
+def test_default_config_round_trip_beyond_max_path(long_path_root: Path) -> None:
+    path = long_path_root / "configuration" / "config.toml"
+    settings = Settings(home=long_path_root / "workspace", offline=True)
+
+    write_default_config(path, settings)
+
+    assert filesystem_path(path).is_file()
+    assert load_settings(path) == settings

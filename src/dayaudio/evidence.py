@@ -7,10 +7,10 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .identity import IdentityDecision
+from .paths import filesystem_path
 from .speaker import SpeakerAssignment
 from .types import AsrSegment, EvidenceConfidence, EvidenceWindow, ParticipantRole
 
@@ -483,7 +483,7 @@ def select_revisions_from_storage(
                 continue
             if metadata.get("metadata_only") is not True:
                 try:
-                    marker = Path(str(getattr(artifact, "path"))).read_bytes()
+                    marker = filesystem_path(str(getattr(artifact, "path"))).read_bytes()
                 except OSError:
                     continue
                 if marker != encoded or hashlib.sha256(marker).hexdigest() != digest:

@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .cas import atomic_write_bytes
+from .paths import filesystem_path
 from .types import EvidenceWindow, SourceRecord
 
 TRUSTED_RECORDING_TIME_BASES = frozenset(
@@ -440,23 +440,10 @@ def build_summary_packets(
 
 def _atomic_write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, destination)
-    except BaseException:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    atomic_write_bytes(destination, encoded)
 
 
 def write_day_bundles(path: str | Path, bundles: Iterable[DayBundle]) -> None:
@@ -473,7 +460,7 @@ def write_day_bundles(path: str | Path, bundles: Iterable[DayBundle]) -> None:
 
 
 def read_day_bundles(path: str | Path) -> tuple[DayBundle, ...]:
-    with Path(path).open("r", encoding="utf-8") as handle:
+    with filesystem_path(path).open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, Mapping) or payload.get("schema_version") != "dayaudio.day_bundles.v1":
         raise ValueError("unsupported day bundle document")
@@ -500,7 +487,7 @@ def write_summary_packets(path: str | Path, packets: Iterable[SummaryPacket]) ->
 
 
 def read_summary_packets(path: str | Path) -> tuple[SummaryPacket, ...]:
-    with Path(path).open("r", encoding="utf-8") as handle:
+    with filesystem_path(path).open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, Mapping) or payload.get("schema_version") != "dayaudio.summary_packets.v1":
         raise ValueError("unsupported summary packet document")

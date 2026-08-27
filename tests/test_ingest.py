@@ -6,14 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from dayaudio.cas import ContentAddressedStore
+from dayaudio.cas import ContentAddressedStore, atomic_write_bytes
 from dayaudio.ingest import (
     ProbeError,
+    discover_audio_files,
     filename_recording_time,
     ingest_file,
     parse_ffprobe,
     probe_audio,
 )
+from dayaudio.paths import filesystem_path
 from dayaudio.storage import Storage
 
 
@@ -45,9 +47,9 @@ class ProbeRunner:
 
 def test_ingest_hashes_probes_copies_and_deduplicates(tmp_path: Path) -> None:
     first = tmp_path / "recording_2026-08-25_10-20-30.m4a"
-    first.write_bytes(b"same audio bytes")
+    atomic_write_bytes(first, b"same audio bytes")
     copy = tmp_path / "copy.m4a"
-    copy.write_bytes(first.read_bytes())
+    atomic_write_bytes(copy, filesystem_path(first).read_bytes())
     storage = Storage(tmp_path / "state.sqlite3")
     cas = ContentAddressedStore(tmp_path / "cas")
     runner = ProbeRunner(ffprobe_payload())
@@ -114,3 +116,16 @@ def test_probe_rejects_non_utf8_output(tmp_path: Path) -> None:
 
     with pytest.raises(ProbeError, match="not valid UTF-8"):
         probe_audio(tmp_path / "recording.m4a", runner=runner)
+
+
+def test_discover_audio_files_walks_descendants_beyond_max_path(
+    near_path_root: Path,
+) -> None:
+    nested = near_path_root / ("deep-" + "x" * 35)
+    audio = nested / ("recording-" + "y" * 30 + ".wav")
+    ignored = nested / ("notes-" + "z" * 30 + ".txt")
+    filesystem_path(nested).mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(audio, b"audio")
+    atomic_write_bytes(ignored, b"text")
+
+    assert discover_audio_files([near_path_root]) == [audio.resolve()]

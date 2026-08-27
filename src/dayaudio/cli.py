@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -56,6 +57,7 @@ from dayaudio.identity import (
     save_owner_profile,
 )
 from dayaudio.ingest import Ingestor
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 from dayaudio.pipeline import PipelineConfig, ResumablePipeline
 from dayaudio.privacy import redact_path
 from dayaudio.profiles import get_profile, list_profiles
@@ -85,7 +87,7 @@ def _settings(args: argparse.Namespace) -> Settings:
     config_path = Path(config_value).expanduser().resolve() if config_value else None
     if config_path is None:
         candidate = (requested_home or default_home()) / "config.toml"
-        config_path = candidate if candidate.is_file() else None
+        config_path = candidate if filesystem_path(candidate).is_file() else None
     return load_settings(config_path, home=requested_home)
 
 
@@ -101,12 +103,29 @@ def _model_weight_digest(model: str, explicit: str | None) -> str | None:
     if explicit:
         return explicit.lower()
     path = Path(model).expanduser()
-    if path.is_file():
+    filesystem_model = filesystem_path(path)
+    if filesystem_model.is_file():
         return sha256_file(path)
-    if path.is_dir():
-        candidates = list(path.glob("campplus*.bin")) + list(path.glob("*.bin"))
-        if len(candidates) == 1:
-            return sha256_file(candidates[0])
+    if filesystem_model.is_dir():
+        filesystem_model_tree = filesystem_tree_path(path)
+        files = sorted(
+            (
+                (item.relative_to(filesystem_model_tree).as_posix(), item)
+                for item in filesystem_model_tree.rglob("*")
+                if item.is_file()
+            ),
+            key=lambda value: value[0],
+        )
+        digest = hashlib.sha256()
+        for relative, candidate in files:
+            size = candidate.stat().st_size
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(size).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(sha256_file(candidate).encode("ascii"))
+            digest.update(b"\n")
+        return digest.hexdigest()
     return None
 
 
@@ -117,7 +136,7 @@ def _require_reproducible_model(
     digest: str | None = None,
     label: str,
 ) -> None:
-    if Path(model).expanduser().exists() or digest:
+    if filesystem_path(Path(model).expanduser()).exists() or digest:
         return
     if revision:
         return
@@ -151,7 +170,7 @@ def _register_file_artifact(
         kind=kind,
         sha256=sha256_file(path),
         path=path,
-        size_bytes=path.stat().st_size,
+        size_bytes=filesystem_path(path).stat().st_size,
         source_id=source_id,
         task_key=task_key,
         metadata={"current": replace_current},
@@ -190,24 +209,29 @@ def _invalidate_derived(workspace: Workspace, *, from_stage: str) -> None:
     safe_root = workspace.settings.work_dir.resolve()
     for row in rows:
         path = Path(row["path"]).resolve()
-        if path.is_file() and path.is_relative_to(safe_root):
-            path.unlink()
+        filesystem_artifact = filesystem_path(path)
+        if filesystem_artifact.is_file() and path.is_relative_to(safe_root):
+            filesystem_artifact.unlink()
     for path in (workspace.evidence_path, workspace.bundles_path, workspace.packets_path):
         kind = {
             workspace.evidence_path: "evidence-current",
             workspace.bundles_path: "day-bundles-current",
             workspace.packets_path: "summary-packets-current",
         }[path]
-        if kind in kinds and path.exists():
-            path.unlink()
-    if {"summary-json", "summary-markdown"}.intersection(kinds) and workspace.summary_dir.exists():
-        shutil.rmtree(workspace.summary_dir)
+        filesystem_artifact = filesystem_path(path)
+        if kind in kinds and filesystem_artifact.exists():
+            filesystem_artifact.unlink()
+    if (
+        {"summary-json", "summary-markdown"}.intersection(kinds)
+        and filesystem_path(workspace.summary_dir).is_dir()
+    ):
+        shutil.rmtree(filesystem_tree_path(workspace.summary_dir))
 
 
 def command_init(args: argparse.Namespace) -> int:
     settings = _settings(args).ensure_layout()
     config_path = Path(args.output_config).expanduser().resolve() if args.output_config else settings.home / "config.toml"
-    if config_path.exists() and not args.force:
+    if filesystem_path(config_path).exists() and not args.force:
         raise FileExistsError(f"configuration already exists: {config_path}")
     write_default_config(config_path, settings)
     with Workspace(settings) as workspace:
@@ -268,9 +292,21 @@ def command_ingest(args: argparse.Namespace) -> int:
 def _status_payload(workspace: Workspace) -> dict[str, Any]:
     sources = workspace.storage.list_sources()
     segments = workspace.storage.list_segments(latest_only=False)
-    evidence = read_evidence(workspace.evidence_path) if workspace.evidence_path.exists() else ()
-    bundles = read_day_bundles(workspace.bundles_path) if workspace.bundles_path.exists() else ()
-    packets = read_summary_packets(workspace.packets_path) if workspace.packets_path.exists() else ()
+    evidence = (
+        read_evidence(workspace.evidence_path)
+        if filesystem_path(workspace.evidence_path).exists()
+        else ()
+    )
+    bundles = (
+        read_day_bundles(workspace.bundles_path)
+        if filesystem_path(workspace.bundles_path).exists()
+        else ()
+    )
+    packets = (
+        read_summary_packets(workspace.packets_path)
+        if filesystem_path(workspace.packets_path).exists()
+        else ()
+    )
     owner = load_owner_profile(workspace.owner_profile_path)
     artifacts = workspace.storage.list_artifacts()
     return {
@@ -298,7 +334,11 @@ def _status_payload(workspace: Workspace) -> dict[str, Any]:
             "evidence_windows": len(evidence),
             "day_bundles": len(bundles),
             "summary_packets": len(packets),
-            "summaries": len(list(workspace.summary_dir.glob("*.json"))) if workspace.summary_dir.exists() else 0,
+            "summaries": len(
+                list(filesystem_tree_path(workspace.summary_dir).glob("*.json"))
+            )
+            if filesystem_path(workspace.summary_dir).is_dir()
+            else 0,
         },
         "tasks": workspace.storage.task_queue().counts(),
         "owner_profile": {
@@ -378,8 +418,9 @@ def _cleanup_completed_block_files(workspace: Workspace) -> int:
         if not value:
             continue
         path = Path(str(value)).resolve()
-        if path.is_file() and path.is_relative_to(root):
-            path.unlink()
+        filesystem_block = filesystem_path(path)
+        if filesystem_block.is_file() and path.is_relative_to(root):
+            filesystem_block.unlink()
             removed += 1
     return removed
 
@@ -395,7 +436,9 @@ def command_process(args: argparse.Namespace) -> int:
             revision=args.model_revision,
             label="SenseVoice model",
         )
-        if not Path(args.vad_model or DEFAULT_FSMN_VAD_MODEL).expanduser().exists():
+        if not filesystem_path(
+            Path(args.vad_model or DEFAULT_FSMN_VAD_MODEL).expanduser()
+        ).exists():
             raise ValueError("FSMN-VAD must be supplied as a local cached path in v0.2")
     fast_command = _command_args(args.fast_command, args.fast_command_arg)
     strong_command = _command_args(args.strong_command, args.strong_command_arg)
@@ -739,12 +782,15 @@ def command_owner_delete(args: argparse.Namespace) -> int:
     if not args.yes:
         raise ValueError("owner delete requires --yes")
     with Workspace(_settings(args)) as workspace:
-        existed = workspace.owner_profile_path.exists()
+        filesystem_profile = filesystem_path(workspace.owner_profile_path)
+        existed = filesystem_profile.exists()
         if existed:
-            workspace.owner_profile_path.unlink()
+            filesystem_profile.unlink()
         scrubbed_speaker_files = 0
-        if workspace.speaker_dir.exists():
-            for path in workspace.speaker_dir.glob("*.json"):
+        filesystem_speaker_dir = filesystem_tree_path(workspace.speaker_dir)
+        if filesystem_speaker_dir.is_dir():
+            for item in filesystem_speaker_dir.glob("*.json"):
+                path = workspace.speaker_dir / item.relative_to(filesystem_speaker_dir)
                 payload = read_json(path)
                 if "identity_decisions" in payload:
                     payload.pop("identity_decisions", None)
@@ -779,7 +825,7 @@ def _speaker_context(workspace: Workspace) -> tuple[dict[str, SpeakerAssignment]
     profile = load_owner_profile(workspace.owner_profile_path)
     for source in workspace.storage.list_sources():
         path = workspace.speaker_path(source.source_id)
-        if not path.exists():
+        if not filesystem_path(path).exists():
             continue
         payload = read_json(path)
         turns = tuple(
@@ -891,7 +937,7 @@ def command_set_recording_time(args: argparse.Namespace) -> int:
     timestamp = parsed.isoformat()
     with Workspace(_settings(args)) as workspace:
         sources = _selected_sources(workspace, args.source_id)
-        if workspace.recording_time_overrides_path.exists():
+        if filesystem_path(workspace.recording_time_overrides_path).exists():
             document = read_json(workspace.recording_time_overrides_path)
             if document.get("schema_version") != "dayaudio.recording_time_overrides.v1":
                 raise ValueError("unsupported recording-time override document")
@@ -932,7 +978,7 @@ def command_set_recording_time(args: argparse.Namespace) -> int:
 def _sources_with_recording_time_overrides(workspace: Workspace) -> list[Any]:
     sources = workspace.storage.list_sources()
     path = workspace.recording_time_overrides_path
-    if not path.exists():
+    if not filesystem_path(path).exists():
         return sources
     document = read_json(path)
     if document.get("schema_version") != "dayaudio.recording_time_overrides.v1":
@@ -1048,7 +1094,7 @@ def command_summarize(args: argparse.Namespace) -> int:
             summary_markdown_path = workspace.summary_markdown_path(
                 request.scope_id, result.summary_id
             )
-            reused = summary_json_path.exists()
+            reused = filesystem_path(summary_json_path).exists()
             if reused:
                 existing = read_json(summary_json_path)
                 if (
@@ -1058,13 +1104,17 @@ def command_summarize(args: argparse.Namespace) -> int:
                     or not existing.get("validation", {}).get("valid")
                 ):
                     raise ValueError("existing summary artifact does not match its content address")
-                if not summary_markdown_path.is_file():
+                filesystem_markdown = filesystem_path(summary_markdown_path)
+                if not filesystem_markdown.is_file():
                     atomic_write_text(
                         summary_markdown_path,
                         result.to_markdown(),
                         mode=0o600,
                     )
-                elif summary_markdown_path.read_text(encoding="utf-8") != result.to_markdown():
+                elif (
+                    filesystem_markdown.read_text(encoding="utf-8")
+                    != result.to_markdown()
+                ):
                     raise ValueError("existing summary Markdown does not match its content address")
             else:
                 write_summary_artifact(
@@ -1136,9 +1186,10 @@ def command_cleanup(args: argparse.Namespace) -> int:
             artifact_ids: list[str] = []
             for artifact in pcm_artifacts:
                 path = Path(artifact.path).resolve()
-                if path.is_file() and path.is_relative_to(root):
-                    removed_pcm_bytes += path.stat().st_size
-                    path.unlink()
+                filesystem_pcm = filesystem_path(path)
+                if filesystem_pcm.is_file() and path.is_relative_to(root):
+                    removed_pcm_bytes += filesystem_pcm.stat().st_size
+                    filesystem_pcm.unlink()
                     removed_pcm += 1
                 artifact_ids.append(artifact.artifact_id)
             if artifact_ids:
@@ -1182,18 +1233,21 @@ def command_forget_source(args: argparse.Namespace) -> int:
                 )
             if (
                 remaining_references == 0
-                and resolved.is_file()
+                and filesystem_path(resolved).is_file()
                 and any(resolved.is_relative_to(root) for root in safe_roots)
             ):
                 if os.name == "nt":  # clear the read-only attribute from older CAS objects
-                    os.chmod(resolved, 0o600)
-                resolved.unlink()
+                    os.chmod(filesystem_path(resolved), 0o600)
+                filesystem_path(resolved).unlink()
                 removed_files += 1
         blocks = (workspace.settings.work_dir / "blocks" / source.source_id).resolve()
-        if blocks.is_dir() and blocks.is_relative_to(workspace.settings.work_dir.resolve()):
-            shutil.rmtree(blocks)
+        filesystem_blocks = filesystem_path(blocks)
+        if filesystem_blocks.is_dir() and blocks.is_relative_to(
+            workspace.settings.work_dir.resolve()
+        ):
+            shutil.rmtree(filesystem_tree_path(blocks))
         _invalidate_derived(workspace, from_stage="evidence")
-        if workspace.recording_time_overrides_path.exists():
+        if filesystem_path(workspace.recording_time_overrides_path).exists():
             document = read_json(workspace.recording_time_overrides_path)
             document["revisions"] = [
                 item
@@ -1207,9 +1261,10 @@ def command_forget_source(args: argparse.Namespace) -> int:
                 path=workspace.recording_time_overrides_path,
                 replace_current=True,
             )
-        if args.delete_exports and workspace.settings.export_dir.exists():
-            shutil.rmtree(workspace.settings.export_dir)
-            workspace.settings.export_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        filesystem_export_dir = filesystem_path(workspace.settings.export_dir)
+        if args.delete_exports and filesystem_export_dir.exists():
+            shutil.rmtree(filesystem_tree_path(workspace.settings.export_dir))
+            filesystem_export_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     _emit(
         {
             "source_id": args.source_id,

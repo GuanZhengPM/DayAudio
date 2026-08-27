@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dayaudio.cas import atomic_write_text
+from dayaudio.paths import filesystem_path
 
 try:
     import tomllib
@@ -64,9 +65,9 @@ class Settings:
         return self.home / "models"
 
     def ensure_layout(self) -> "Settings":
-        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        filesystem_path(self.home).mkdir(parents=True, exist_ok=True, mode=0o700)
         for path in (self.cas_dir, self.work_dir, self.export_dir, self.models_dir):
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            filesystem_path(path).mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name != "nt":
             for path in (self.home, self.cas_dir, self.work_dir, self.export_dir, self.models_dir):
                 os.chmod(path, 0o700)
@@ -104,7 +105,7 @@ def load_settings(
 ) -> Settings:
     settings = Settings(home=(home or default_home()).expanduser().resolve())
     if path is not None:
-        with path.open("rb") as handle:
+        with filesystem_path(path).open("rb") as handle:
             data = tomllib.load(handle)
         workspace = _table(data, "workspace")
         pipeline = _table(data, "pipeline")
@@ -149,7 +150,7 @@ def load_settings(
 def write_default_config(path: Path, settings: Settings) -> None:
     """Write a small TOML file without requiring a TOML serialization package."""
 
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filesystem_path(path.parent).mkdir(parents=True, exist_ok=True, mode=0o700)
     text = f'''[workspace]
 home = {json.dumps(str(settings.home))}
 

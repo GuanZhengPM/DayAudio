@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from .cas import canonical_json_bytes, digest_json
+from .paths import filesystem_path
 from .types import AsrSegment, SourceRecord
 
 SCHEMA_VERSION = 2
@@ -201,8 +202,9 @@ class Storage:
             self._anchor = self._new_connection()
         else:
             self.path = Path(path).expanduser().resolve()
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            self._database = str(self.path)
+            filesystem_database = filesystem_path(self.path)
+            filesystem_database.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._database = str(filesystem_database)
             self._uri = False
         self._migrate()
         self._secure_files()

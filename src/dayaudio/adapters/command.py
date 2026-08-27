@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
+from dayaudio.paths import filesystem_path
 from dayaudio.types import AsrSegment
 
 OutputFormat = Literal["auto", "json", "jsonl"]
@@ -313,7 +314,7 @@ def parse_command_output(
 
 def _wav_duration(path: Path) -> float | None:
     try:
-        with wave.open(str(path), "rb") as source:
+        with wave.open(str(filesystem_path(path)), "rb") as source:
             rate = source.getframerate()
             return source.getnframes() / rate if rate else None
     except (OSError, EOFError, wave.Error):
@@ -374,7 +375,7 @@ class CommandAsrBackend:
         offset_seconds: float = 0.0,
     ) -> list[AsrSegment]:
         path = Path(audio_path)
-        if not path.is_file():
+        if not filesystem_path(path).is_file():
             raise FileNotFoundError(path)
         with tempfile.TemporaryDirectory(prefix="dayaudio-command-") as directory:
             output_path = Path(directory) / "output.jsonl"

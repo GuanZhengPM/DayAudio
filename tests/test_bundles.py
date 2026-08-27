@@ -92,3 +92,18 @@ def test_packetization_is_day_aligned_and_round_trips(tmp_path) -> None:
     write_summary_packets(packet_path, packets)
     assert read_day_bundles(bundle_path) == (bundle,)
     assert read_summary_packets(packet_path) == packets
+
+
+def test_bundle_documents_support_paths_beyond_max_path(long_path_root) -> None:
+    source = _source("source-long", "2026-08-26T00:00:00+08:00")
+    evidence = (_evidence("e-long", "source-long", 10),)
+    bundle = build_day_bundles((source,), evidence)[0]
+    packets = build_summary_packets(bundle, evidence)
+    bundle_path = long_path_root / "bundles" / "day-bundles.json"
+    packet_path = long_path_root / "bundles" / "summary-packets.json"
+    assert len(str(bundle_path)) > 260
+
+    write_day_bundles(bundle_path, (bundle,))
+    write_summary_packets(packet_path, packets)
+    assert read_day_bundles(bundle_path) == (bundle,)
+    assert read_summary_packets(packet_path) == packets

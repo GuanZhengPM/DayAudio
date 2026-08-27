@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import struct
 import wave
 from pathlib import Path
 
 from dayaudio.diarize import diarize_file, make_speaker_windows, write_wav_slice
+from dayaudio.paths import filesystem_path
 
 
 def make_wav(path: Path, seconds: float = 5.0) -> None:
@@ -51,3 +53,32 @@ def test_write_slice_and_diarize(tmp_path: Path) -> None:
     assert result.clustering is not None
     assert len(result.clustering.clusters) == 2
     assert len(result.clustering.turns) == 2
+
+
+def test_write_slice_supports_path_beyond_max_path(
+    tmp_path: Path, long_path_root: Path
+) -> None:
+    source = tmp_path / "source.wav"
+    make_wav(source)
+    destination = long_path_root / "slices" / "slice.wav"
+    assert len(str(destination)) > 260
+
+    sliced = write_wav_slice(source, destination, start=1.0, end=3.0)
+    assert sliced == destination
+    with wave.open(str(filesystem_path(sliced)), "rb") as input_audio:
+        assert input_audio.getnframes() == 200
+
+
+def test_write_slice_temp_file_crosses_max_path_from_near_root(
+    tmp_path: Path, near_path_root: Path
+) -> None:
+    source = tmp_path / "source.wav"
+    make_wav(source)
+    root_units = len(os.path.abspath(near_path_root).encode("utf-16-le")) // 2
+    parent = near_path_root / ("s" * (245 - root_units - 1))
+    destination = parent / "x"
+    assert len(os.path.abspath(destination).encode("utf-16-le")) // 2 == 247
+
+    write_wav_slice(source, destination, start=1.0, end=3.0)
+    with wave.open(str(filesystem_path(destination)), "rb") as input_audio:
+        assert input_audio.getnframes() == 200

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from dayaudio.adapters.campplus import CampPlusBackend, CampPlusConfig
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 from dayaudio.speaker import SpeakerWindow
 
 
@@ -68,3 +69,29 @@ def test_offline_campplus_rejects_unresolved_model_before_factory(tmp_path: Path
     with pytest.raises(FileNotFoundError, match=r"offline CAM\+\+"):
         backend.embed_audio(audio)
     assert not called
+
+
+def test_campplus_uses_extended_io_paths_for_deep_audio_and_model_tree(
+    near_path_root: Path,
+) -> None:
+    model_root = near_path_root
+    weights = model_root / ("weights-" + "w" * 35) / "campplus.bin"
+    audio = model_root / ("clips-" + "c" * 35) / "sample.wav"
+    filesystem_path(weights.parent).mkdir(parents=True, exist_ok=True)
+    filesystem_path(audio.parent).mkdir(parents=True, exist_ok=True)
+    filesystem_path(weights).write_bytes(b"weights")
+    filesystem_path(audio).write_bytes(b"fixture")
+    model = FakeModel()
+    factory_calls: list[dict[str, object]] = []
+
+    def factory(**kwargs: object) -> FakeModel:
+        factory_calls.append(dict(kwargs))
+        return model
+
+    backend = CampPlusBackend(
+        CampPlusConfig(model_id=str(model_root), offline=True),
+        model_factory=factory,
+    )
+    assert backend.embed_audio(audio) == pytest.approx((0.6, 0.8))
+    assert factory_calls[0]["model"] == str(filesystem_tree_path(model_root))
+    assert model.calls[0]["input"] == str(filesystem_path(audio))

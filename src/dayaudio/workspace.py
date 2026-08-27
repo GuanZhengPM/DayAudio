@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 import wave
 from pathlib import Path
 from typing import Any, Iterable
 
 from dayaudio.audio import DecodedAudio, decode_audio, read_wav_info
-from dayaudio.cas import ContentAddressedStore, sha256_file
+from dayaudio.cas import ContentAddressedStore, atomic_write_bytes, sha256_file
 from dayaudio.config import Settings
 from dayaudio.diarize import write_wav_slice
+from dayaudio.paths import filesystem_path
 from dayaudio.storage import ArtifactRecord, Storage
 from dayaudio.types import AudioBlock, SourceRecord
 
@@ -24,28 +23,14 @@ class WorkspaceError(RuntimeError):
 
 def atomic_json(path: str | Path, value: Any) -> Path:
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(value, output, ensure_ascii=False, sort_keys=True, indent=2)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary_name, destination)
-        return destination
-    except BaseException:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+    encoded = (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    return atomic_write_bytes(destination, encoded)
 
 
 def read_json(path: str | Path) -> Any:
-    with Path(path).open("r", encoding="utf-8") as source:
+    with filesystem_path(path).open("r", encoding="utf-8") as source:
         return json.load(source)
 
 
@@ -108,18 +93,18 @@ class Workspace:
         )
         for artifact in reversed(artifacts):
             candidate = Path(artifact.path)
-            if candidate.is_file():
+            if filesystem_path(candidate).is_file():
                 if sha256_file(candidate) != artifact.sha256:
                     raise WorkspaceError(
                         f"source CAS integrity check failed for {source.source_id}"
                     )
                 return candidate
         original = Path(source.source_path)
-        if original.is_file():
+        if filesystem_path(original).is_file():
             return original
         for location in reversed(self.storage.source_locations(source.source_id)):
             candidate = Path(location)
-            if candidate.is_file():
+            if filesystem_path(candidate).is_file():
                 return candidate
         raise WorkspaceError(
             f"source bytes are unavailable for {source.source_id}; re-ingest the file"
@@ -149,7 +134,9 @@ class Workspace:
         )
         for artifact in reversed(artifacts):
             candidate = Path(artifact.path)
-            if candidate.is_file() and (not verify or sha256_file(candidate) == artifact.sha256):
+            if filesystem_path(candidate).is_file() and (
+                not verify or sha256_file(candidate) == artifact.sha256
+            ):
                 return candidate
 
         if artifacts:
@@ -160,10 +147,11 @@ class Workspace:
                 )
 
         destination = self.pcm_path(source.source_id)
-        if destination.is_file():
+        filesystem_destination = filesystem_path(destination)
+        if filesystem_destination.is_file():
             # An unregistered or hash-mismatched PCM is not authoritative.
             # It is derived and can be recreated from the verified source.
-            destination.unlink()
+            filesystem_destination.unlink()
 
         decoded = decode_audio(
             self._source_container_path(source),
@@ -180,7 +168,7 @@ class Workspace:
 
         def frame_digest(path: Path) -> str:
             digest = hashlib.sha256()
-            with wave.open(str(path), "rb") as input_audio:
+            with wave.open(str(filesystem_path(path)), "rb") as input_audio:
                 while True:
                     frames = input_audio.readframes(65_536)
                     if not frames:
@@ -188,7 +176,7 @@ class Workspace:
                     digest.update(frames)
             return digest.hexdigest()
 
-        if destination.is_file():
+        if filesystem_path(destination).is_file():
             info = read_wav_info(destination)
             expected = block.context_end - block.context_start
             hash_matches = block.pcm_sha256 is None or frame_digest(destination) == block.pcm_sha256
@@ -204,7 +192,7 @@ class Workspace:
             end=block.context_end,
         )
         if block.pcm_sha256 is not None and frame_digest(result) != block.pcm_sha256:
-            result.unlink(missing_ok=True)
+            filesystem_path(result).unlink(missing_ok=True)
             raise WorkspaceError("materialized block PCM hash does not match its task identity")
         return result
 
@@ -215,7 +203,8 @@ class Workspace:
             if selected and artifact.kind not in selected:
                 continue
             path = Path(artifact.path)
-            exists = path.is_file()
+            filesystem_artifact = filesystem_path(path)
+            exists = filesystem_artifact.is_file()
             actual = sha256_file(path) if exists else None
             results.append(
                 {
@@ -223,7 +212,11 @@ class Workspace:
                     "kind": artifact.kind,
                     "exists": exists,
                     "sha256_matches": actual == artifact.sha256 if exists else False,
-                    "size_matches": path.stat().st_size == artifact.size_bytes if exists else False,
+                    "size_matches": (
+                        filesystem_artifact.stat().st_size == artifact.size_bytes
+                        if exists
+                        else False
+                    ),
                 }
             )
         return results

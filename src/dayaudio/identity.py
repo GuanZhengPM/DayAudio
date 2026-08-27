@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from .cas import atomic_write_bytes
+from .paths import filesystem_path
 from .speaker import Vector, cosine_similarity
 
 SampleStatus = Literal["positive", "negative", "mixed"]
@@ -311,8 +312,9 @@ def _profile_lock(destination: Path):
     """Cross-platform advisory lock on a non-sensitive sibling file."""
 
     lock_path = destination.with_name(destination.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with lock_path.open("a+b") as handle:
+    filesystem_lock = filesystem_path(lock_path)
+    filesystem_lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with filesystem_lock.open("a+b") as handle:
         if os.name == "nt":  # pragma: no cover - exercised in Windows CI
             import msvcrt
 
@@ -341,9 +343,12 @@ def append_profile_revision(path: str | Path, profile: IdentityProfileRevision) 
     """Append one JSONL snapshot while verifying the on-disk revision chain."""
 
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filesystem_destination = filesystem_path(destination)
+    filesystem_destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _profile_lock(destination):
-        revisions = load_profile_revisions(destination) if destination.exists() else ()
+        revisions = (
+            load_profile_revisions(destination) if filesystem_destination.exists() else ()
+        )
         if revisions:
             latest = revisions[-1]
             if latest.identity_id != profile.identity_id:
@@ -366,7 +371,7 @@ def append_profile_revision(path: str | Path, profile: IdentityProfileRevision) 
                 raise ValueError("identity revision must append one judgment without rewriting history")
         elif profile.revision != 1 or profile.previous_revision_id is not None:
             raise ValueError("a new profile log must begin at revision 1")
-        previous = destination.read_bytes() if destination.exists() else b""
+        previous = filesystem_destination.read_bytes() if filesystem_destination.exists() else b""
         if previous and not previous.endswith(b"\n"):
             previous += b"\n"
         record = (
@@ -378,10 +383,11 @@ def append_profile_revision(path: str | Path, profile: IdentityProfileRevision) 
 
 def load_profile_revisions(path: str | Path) -> tuple[IdentityProfileRevision, ...]:
     source = Path(path)
-    if not source.exists():
+    filesystem_source = filesystem_path(source)
+    if not filesystem_source.exists():
         return ()
     revisions: list[IdentityProfileRevision] = []
-    with source.open("r", encoding="utf-8") as handle:
+    with filesystem_source.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue

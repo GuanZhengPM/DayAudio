@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 from dayaudio.types import AsrSegment
 
 DEFAULT_SENSEVOICE_MODEL = "iic/SenseVoiceSmall"
@@ -96,17 +97,25 @@ def _verified_model_directory(path: Path) -> bool:
     try:
         return any(
             item.is_file() and item.suffix.casefold() in _WEIGHT_SUFFIXES
-            for item in path.rglob("*")
+            for item in filesystem_tree_path(path).rglob("*")
         )
     except OSError:
         return False
 
 
+def _model_api_reference(path: Path) -> str:
+    filesystem_model = filesystem_path(path)
+    if filesystem_model.is_dir():
+        return str(filesystem_tree_path(path))
+    return str(filesystem_model)
+
+
 def _resolve_offline_model(model_id: str) -> Path | None:
     direct = Path(model_id).expanduser()
-    if direct.is_file():
+    filesystem_direct = filesystem_path(direct)
+    if filesystem_direct.is_file():
         return direct.resolve()
-    if direct.is_dir() and _verified_model_directory(direct):
+    if filesystem_direct.is_dir() and _verified_model_directory(direct):
         return direct.resolve()
 
     roots = [
@@ -137,13 +146,15 @@ def _resolve_offline_model(model_id: str) -> Path | None:
     for root in roots:
         for relative in relative_candidates:
             candidate = root / relative
-            if candidate.is_dir() and _verified_model_directory(candidate):
+            if filesystem_path(candidate).is_dir() and _verified_model_directory(candidate):
                 snapshots = candidate / "snapshots"
-                if snapshots.is_dir():
+                filesystem_snapshots = filesystem_tree_path(snapshots)
+                if filesystem_snapshots.is_dir():
                     valid = [
-                        item
-                        for item in snapshots.iterdir()
-                        if item.is_dir() and _verified_model_directory(item)
+                        snapshots / item.name
+                        for item in filesystem_snapshots.iterdir()
+                        if item.is_dir()
+                        and _verified_model_directory(snapshots / item.name)
                     ]
                     if valid:
                         return sorted(valid, key=lambda item: item.name)[-1].resolve()
@@ -210,7 +221,7 @@ def _stable_segment_id(
 
 def _wav_duration(path: Path) -> float | None:
     try:
-        with wave.open(str(path), "rb") as handle:
+        with wave.open(str(filesystem_path(path)), "rb") as handle:
             rate = handle.getframerate()
             return handle.getnframes() / rate if rate else None
     except (OSError, EOFError, wave.Error):
@@ -374,6 +385,13 @@ class SenseVoiceBackend:
         if self._model is None:
             model_reference: str = self.config.model_id
             vad_reference: str | None = self.config.vad_model_id
+            configured_model = Path(self.config.model_id).expanduser()
+            if filesystem_path(configured_model).exists():
+                model_reference = _model_api_reference(configured_model)
+            if self.config.vad_model_id:
+                configured_vad = Path(self.config.vad_model_id).expanduser()
+                if filesystem_path(configured_vad).exists():
+                    vad_reference = _model_api_reference(configured_vad)
             if self.config.offline:
                 _enable_offline_environment()
                 resolved_model = self.model_path or _resolve_offline_model(
@@ -383,7 +401,7 @@ class SenseVoiceBackend:
                     raise OfflineModelUnavailableError(
                         f"offline model is not cached locally: {self.config.model_id}"
                     )
-                model_reference = str(resolved_model)
+                model_reference = _model_api_reference(resolved_model)
                 if self.config.vad_model_id:
                     resolved_vad = self.vad_model_path or _resolve_offline_model(
                         self.config.vad_model_id
@@ -392,7 +410,7 @@ class SenseVoiceBackend:
                         raise OfflineModelUnavailableError(
                             f"offline VAD model is not cached locally: {self.config.vad_model_id}"
                         )
-                    vad_reference = str(resolved_vad)
+                    vad_reference = _model_api_reference(resolved_vad)
             kwargs: dict[str, Any] = dict(self.config.model_kwargs)
             kwargs.update({
                 "model": model_reference,
@@ -415,12 +433,13 @@ class SenseVoiceBackend:
         offset_seconds: float = 0.0,
     ) -> list[AsrSegment]:
         path = Path(audio_path)
-        if not path.is_file():
+        filesystem_audio = filesystem_path(path)
+        if not filesystem_audio.is_file():
             raise FileNotFoundError(path)
         model = self._ensure_model()
         kwargs: dict[str, Any] = dict(self.config.generate_kwargs)
         kwargs.update({
-            "input": str(path),
+            "input": str(filesystem_audio),
             "cache": {},
             "language": self.config.language,
             "use_itn": self.config.use_itn,
@@ -516,6 +535,9 @@ class FsmnVadBackend:
     def _ensure_model(self) -> Any:
         if self._model is None:
             model_reference = self.config.model_id
+            configured_model = Path(self.config.model_id).expanduser()
+            if filesystem_path(configured_model).exists():
+                model_reference = _model_api_reference(configured_model)
             if self.config.offline:
                 _enable_offline_environment()
                 resolved = self.model_path or _resolve_offline_model(
@@ -525,7 +547,7 @@ class FsmnVadBackend:
                     raise OfflineModelUnavailableError(
                         f"offline VAD model is not cached locally: {self.config.model_id}"
                     )
-                model_reference = str(resolved)
+                model_reference = _model_api_reference(resolved)
             kwargs: dict[str, Any] = dict(self.config.model_kwargs)
             kwargs.update({
                 "model": model_reference,
@@ -539,10 +561,11 @@ class FsmnVadBackend:
 
     def speech_regions(self, audio_path: Path) -> list[tuple[float, float]]:
         path = Path(audio_path)
-        if not path.is_file():
+        filesystem_audio = filesystem_path(path)
+        if not filesystem_audio.is_file():
             raise FileNotFoundError(path)
         kwargs: dict[str, Any] = dict(self.config.generate_kwargs)
-        kwargs.update({"input": str(path), "cache": {}})
+        kwargs.update({"input": str(filesystem_audio), "cache": {}})
         payload = self._ensure_model().generate(**kwargs)
         self._last_raw_payload = payload
         return _merge_regions(_iter_vad_regions(payload))

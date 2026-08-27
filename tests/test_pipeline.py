@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -8,8 +9,10 @@ from typing import Any
 import pytest
 
 from dayaudio.evidence import build_evidence_from_storage
+from dayaudio.paths import filesystem_path
 from dayaudio.pipeline import (
     PipelineConfig,
+    PipelineResult,
     ResumablePipeline,
     make_block_config_digest,
     make_resume_key,
@@ -129,6 +132,15 @@ class StubStorage:
             and (task_key is None or item.get("task_key") == task_key)
         ]
 
+    def delete_artifacts(self, *, kind: str, task_key: str) -> list[dict[str, Any]]:
+        removed = [
+            item
+            for item in self.artifacts
+            if item.get("kind") == kind and item.get("task_key") == task_key
+        ]
+        self.artifacts = [item for item in self.artifacts if item not in removed]
+        return removed
+
 
 def _block() -> AudioBlock:
     return AudioBlock(
@@ -140,6 +152,16 @@ def _block() -> AudioBlock:
         context_start=0,
         context_end=10,
     )
+
+
+def _extend_to_utf16_units(base: Path, units: int) -> Path:
+    current = len(os.path.abspath(base).encode("utf-16-le")) // 2
+    while current >= units - 1:
+        base = base.parent
+        current = len(os.path.abspath(base).encode("utf-16-le")) // 2
+    component_units = units - current - 1
+    assert 0 < component_units < 255
+    return base / ("p" * component_units)
 
 
 def test_resume_key_matches_task_queue_contract() -> None:
@@ -211,13 +233,28 @@ def test_local_model_bytes_are_bound_into_backend_digest(tmp_path: Path) -> None
     assert first != second
 
 
+def test_local_model_tree_hashes_descendants_beyond_max_path(
+    near_path_root: Path,
+) -> None:
+    weights = near_path_root / ("nested-" + "w" * 40) / "weights.bin"
+    filesystem_weights = filesystem_path(weights)
+    filesystem_weights.parent.mkdir(parents=True, exist_ok=True)
+    filesystem_weights.write_bytes(b"first weights")
+    assert len(str(weights)) > 260
+
+    first = ResumablePipeline(StubBackend(str(near_path_root), "text")).model_digest
+    filesystem_weights.write_bytes(b"changed weights")
+    second = ResumablePipeline(StubBackend(str(near_path_root), "text")).model_digest
+    assert first != second
+
+
 def test_local_weight_hash_is_cached_once_per_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import dayaudio.cas as cas_module
 
     weights = tmp_path / "large-model.gguf"
-    weights.write_bytes(b"weights")
+    filesystem_path(weights).write_bytes(b"weights")
     real = cas_module.sha256_file
     calls = 0
 
@@ -269,7 +306,7 @@ def test_pipeline_cascades_persists_and_resumes(tmp_path: Path) -> None:
     assert promoted[0].text == strong.text
     marker = storage.list_artifacts(kind="asr-block-manifest")[0]
     assert marker["metadata"]["metadata_only"] is False
-    assert Path(marker["path"]).is_file()
+    assert filesystem_path(marker["path"]).is_file()
 
     resumed = pipeline.process_block(_block(), audio)
     assert resumed.resumed
@@ -277,6 +314,98 @@ def test_pipeline_cascades_persists_and_resumes(tmp_path: Path) -> None:
     assert fast.calls == strong.calls == 1
     pipeline.close()
     assert fast.closed and strong.closed
+
+
+def test_pipeline_completion_marker_supports_long_storage_path(
+    tmp_path: Path, long_path_root: Path
+) -> None:
+    audio = tmp_path / "block.wav"
+    audio.write_bytes(b"stub")
+    storage = StubStorage()
+    storage.path = long_path_root / "dayaudio.sqlite3"  # type: ignore[attr-defined]
+    backend = StubBackend("fast", "长路径完成标记", confidence=0.9)
+    pipeline = ResumablePipeline(
+        backend,
+        storage=storage,
+        config=PipelineConfig(config_digest="config", model_digest="model"),
+    )
+
+    first = pipeline.process_block(_block(), audio)
+    marker = storage.list_artifacts(kind="asr-block-manifest")[0]
+    marker_path = Path(marker["path"])
+    assert len(str(marker_path)) > 260
+    assert filesystem_path(marker_path).read_bytes()
+    resumed = pipeline.process_block(_block(), audio)
+    assert resumed.resumed
+    assert resumed.final_segments == first.final_segments
+    assert backend.calls == 1
+
+
+def test_completion_marker_is_case_safe_and_cleans_mixed_namespace_path(
+    near_path_root: Path,
+) -> None:
+    storage_parent = _extend_to_utf16_units(near_path_root.parent, 220)
+    storage = StubStorage()
+    storage.path = storage_parent / "dayaudio.sqlite3"  # type: ignore[attr-defined]
+    pipeline = ResumablePipeline(
+        StubBackend("fast", "text"),
+        storage=storage,
+        config=PipelineConfig(config_digest="config", model_digest="model"),
+    )
+
+    first_segment = AsrSegment(
+        "segment", "src", 0, 1, "first", revision=1, block_id="block"
+    )
+    second_segment = replace(first_segment, text="second", revision=2)
+    first = PipelineResult(
+        "task", "block", "src", (first_segment,), (), (), (first_segment,), ()
+    )
+    second = PipelineResult(
+        "task", "block", "src", (second_segment,), (), (), (second_segment,), ()
+    )
+
+    pipeline._write_completion_marker(first)
+    old_path = Path(storage.artifacts[0]["path"])
+    marker_root_units = len(
+        os.path.abspath(old_path.parent).encode("utf-16-le")
+    ) // 2
+    assert marker_root_units < 248
+    assert len(os.path.abspath(old_path).encode("utf-16-le")) // 2 > 260
+    assert len(old_path.stem) == 64
+    assert old_path.stem == old_path.stem.lower()
+
+    pipeline._write_completion_marker(second)
+    new_path = Path(storage.artifacts[0]["path"])
+    assert new_path != old_path
+    assert not filesystem_path(old_path).exists()
+    assert filesystem_path(new_path).is_file()
+
+
+def test_completion_marker_cleanup_preserves_same_file_alias(tmp_path: Path) -> None:
+    storage = StubStorage()
+    storage.path = tmp_path / "dayaudio.sqlite3"  # type: ignore[attr-defined]
+    pipeline = ResumablePipeline(
+        StubBackend("fast", "text"),
+        storage=storage,
+        config=PipelineConfig(config_digest="config", model_digest="model"),
+    )
+    segment = AsrSegment(
+        "segment", "src", 0, 1, "text", revision=1, block_id="block"
+    )
+    result = PipelineResult(
+        "task", "block", "src", (segment,), (), (), (segment,), ()
+    )
+
+    pipeline._write_completion_marker(result)
+    marker_path = Path(storage.artifacts[0]["path"])
+    alias_directory = marker_path.parent / "alias"
+    filesystem_path(alias_directory).mkdir()
+    storage.artifacts[0]["path"] = str(alias_directory / ".." / marker_path.name)
+
+    pipeline._write_completion_marker(result)
+    replacement = Path(storage.artifacts[0]["path"])
+    assert replacement == marker_path
+    assert filesystem_path(replacement).is_file()
 
 
 def test_pipeline_keeps_fast_when_strong_fails_gate(tmp_path: Path) -> None:
@@ -380,7 +509,7 @@ def test_repair_supersedes_corrupt_manifest_artifact(tmp_path: Path) -> None:
     marker = storage.list_artifacts(
         kind="asr-block-manifest", task_key=first.task_key
     )[0]
-    Path(marker.path).write_bytes(b"corrupt")
+    filesystem_path(marker.path).write_bytes(b"corrupt")
     repaired = pipeline.process_block(_block(), audio)
     assert not repaired.resumed
     assert backend.calls == 2
@@ -610,7 +739,7 @@ def test_pipeline_retains_full_backend_payload_in_content_addressed_artifact(
     ).process_block(_block(), audio)
     raw_artifacts = storage.list_artifacts(kind="asr-raw-fast")
     assert len(raw_artifacts) == 1
-    assert Path(raw_artifacts[0]["path"]).read_bytes() == (
+    assert filesystem_path(raw_artifacts[0]["path"]).read_bytes() == (
         b'{"text":"full raw with control <|zh|>"}'
     )
     assert result.final_segments[0].metadata["raw_output_retained"] is True

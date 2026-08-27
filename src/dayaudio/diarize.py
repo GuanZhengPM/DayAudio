@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from dayaudio.paths import filesystem_path
 from dayaudio.speaker import (
     EmbeddingBackend,
     SpeakerClusteringResult,
@@ -113,14 +114,18 @@ def write_wav_slice(
         raise ValueError("WAV slice bounds are invalid")
     source_path = Path(source)
     target = Path(destination)
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filesystem_source = filesystem_path(source_path)
+    # The generated sibling can cross MAX_PATH even when the final target has
+    # not, so keep the entire atomic slice operation in one namespace.
+    filesystem_target = filesystem_path(target, force_extended=True)
+    filesystem_target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        prefix=".slice-", suffix=".tmp", dir=filesystem_target.parent
     )
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        with wave.open(str(source_path), "rb") as reader:
+        with wave.open(str(filesystem_source), "rb") as reader:
             if reader.getcomptype() != "NONE":
                 raise ValueError("speaker diarization requires an uncompressed WAV")
             rate = reader.getframerate()
@@ -134,7 +139,7 @@ def write_wav_slice(
         with wave.open(str(temporary), "wb") as writer:
             writer.setparams(params)
             writer.writeframes(frames)
-        os.replace(temporary, target)
+        os.replace(temporary, filesystem_target)
         return target
     finally:
         try:
@@ -157,7 +162,7 @@ def diarize_file(
     """Run VAD, isolated-clip embedding, and deterministic file-local clustering."""
 
     source = Path(pcm_wav_path)
-    if not source.is_file():
+    if not filesystem_path(source).is_file():
         raise FileNotFoundError(source)
     regions = tuple(vad_backend.speech_regions(source))
     bare_windows = make_speaker_windows(

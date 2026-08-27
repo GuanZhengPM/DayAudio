@@ -20,10 +20,11 @@ from dayaudio.adapters.sensevoice import (
     SenseVoiceBackend,
     SenseVoiceConfig,
 )
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 
 
 def _silent_wav(path: Path, seconds: float = 1.0) -> Path:
-    with wave.open(str(path), "wb") as output:
+    with wave.open(str(filesystem_path(path)), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(16_000)
@@ -170,7 +171,52 @@ def test_sensevoice_offline_uses_explicit_local_model(tmp_path: Path) -> None:
         model_factory=factory,
     )
     assert backend.transcribe(audio, source_id="src", block_id="block")
-    assert seen[0]["model"] == str(weights.resolve())
+    assert seen[0]["model"] == str(filesystem_path(weights.resolve()))
+
+
+def test_builtin_backends_use_extended_io_paths_for_deep_audio_and_models(
+    near_path_root: Path,
+) -> None:
+    model_root = near_path_root
+    weights = model_root / ("weights-" + "w" * 35) / "model.bin"
+    filesystem_path(weights.parent).mkdir(parents=True, exist_ok=True)
+    filesystem_path(weights).write_bytes(b"cached")
+    audio = near_path_root / ("blocks-" + "b" * 35) / "block.wav"
+    filesystem_path(audio.parent).mkdir(parents=True, exist_ok=True)
+    _silent_wav(audio)
+    asr_factory_calls: list[dict[str, object]] = []
+    asr_generate_calls: list[dict[str, object]] = []
+
+    class CaptureAsrModel(_StubModel):
+        def generate(self, **kwargs: object) -> object:
+            asr_generate_calls.append(dict(kwargs))
+            return super().generate(**kwargs)
+
+    def asr_factory(**kwargs: object) -> CaptureAsrModel:
+        asr_factory_calls.append(dict(kwargs))
+        return CaptureAsrModel([{"text": "deep model"}])
+
+    backend = SenseVoiceBackend(
+        SenseVoiceConfig(model_id=str(model_root), vad_model_id=None, offline=True),
+        model_factory=asr_factory,
+    )
+    assert backend.model_path == model_root.resolve()
+    assert backend.transcribe(audio, source_id="src", block_id="block")
+    assert asr_factory_calls[0]["model"] == str(filesystem_tree_path(model_root))
+    assert asr_generate_calls[0]["input"] == str(filesystem_path(audio))
+
+    vad_generate_calls: list[dict[str, object]] = []
+
+    class CaptureVadModel(_StubModel):
+        def generate(self, **kwargs: object) -> object:
+            vad_generate_calls.append(dict(kwargs))
+            return super().generate(**kwargs)
+
+    vad = FsmnVadBackend(
+        model_factory=lambda **_: CaptureVadModel([{"value": [[0, 500]]}])
+    )
+    assert vad.speech_regions(audio) == [(0.0, 0.5)]
+    assert vad_generate_calls[0]["input"] == str(filesystem_path(audio))
 
 
 def test_command_parser_keeps_latest_turnalign_revision() -> None:

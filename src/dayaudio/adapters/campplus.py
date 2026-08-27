@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from dayaudio.paths import filesystem_path, filesystem_tree_path
 from dayaudio.speaker import SpeakerWindow
 
 DEFAULT_CAMPLUS_MODEL = "cam++"
@@ -119,9 +120,17 @@ class CampPlusBackend:
 
     def _ensure_model(self) -> Any:
         if self._model is None:
+            model_reference = self.config.model_id
+            local = Path(self.config.model_id).expanduser()
+            filesystem_local = filesystem_path(local)
+            if filesystem_local.exists():
+                model_reference = str(
+                    filesystem_tree_path(local)
+                    if filesystem_local.is_dir()
+                    else filesystem_local
+                )
             if self.config.offline:
-                local = Path(self.config.model_id).expanduser()
-                if not local.exists():
+                if not filesystem_local.exists():
                     raise FileNotFoundError(
                         "offline CAM++ requires --speaker-model to reference local cached weights"
                     )
@@ -130,7 +139,7 @@ class CampPlusBackend:
                 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
                 os.environ.setdefault("MODELSCOPE_OFFLINE", "1")
             kwargs: dict[str, Any] = {
-                "model": self.config.model_id,
+                "model": model_reference,
                 "device": self.config.device,
                 "hub": self.config.hub,
                 "disable_update": self.config.disable_update,
@@ -143,9 +152,13 @@ class CampPlusBackend:
 
     def embed_audio(self, audio_path: str | Path) -> tuple[float, ...]:
         path = Path(audio_path)
-        if not path.is_file():
+        filesystem_audio = filesystem_path(path)
+        if not filesystem_audio.is_file():
             raise FileNotFoundError(path)
-        kwargs: dict[str, Any] = {"input": str(path), "disable_pbar": True}
+        kwargs: dict[str, Any] = {
+            "input": str(filesystem_audio),
+            "disable_pbar": True,
+        }
         kwargs.update(dict(self.config.generate_kwargs))
         return _embedding_from_result(self._ensure_model().generate(**kwargs))
 

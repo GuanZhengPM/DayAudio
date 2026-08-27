@@ -15,6 +15,7 @@ from dayaudio.identity import (
     match_identity,
     save_owner_profile,
 )
+from dayaudio.paths import filesystem_path
 
 
 def _sample(status, embedding, suffix, **kwargs):
@@ -46,7 +47,7 @@ def test_append_only_owner_profile_and_mixed_exclusion(tmp_path) -> None:
         save_owner_profile(path, profile)
     assert load_owner_profile(path) == third
     assert load_profile_revisions(path) == (first, second, third)
-    assert len(path.read_text().splitlines()) == 3
+    assert len(filesystem_path(path).read_text().splitlines()) == 3
 
     fourth = append_owner_sample(path, _sample("negative", (0.0, 1.0), "n1"))
     assert load_owner_profile(path) == fourth
@@ -119,8 +120,8 @@ def test_profile_log_detects_content_tampering(tmp_path) -> None:
     path = tmp_path / "owner.jsonl"
     profile = create_owner_profile("owner-1", model_digest="model-a")
     save_owner_profile(path, profile)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(filesystem_path(path).read_text(encoding="utf-8"))
     payload["model_digest"] = "model-b"
-    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    filesystem_path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="content digest mismatch"):
         load_owner_profile(path)

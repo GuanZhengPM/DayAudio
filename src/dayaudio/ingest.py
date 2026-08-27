@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from .cas import ContentAddressedStore, sha256_file
+from .paths import filesystem_path, filesystem_tree_path
 from .storage import Storage
 from .types import SourceRecord
 
@@ -245,7 +246,7 @@ def probe_audio(
         "-show_streams",
         "-print_format",
         "json",
-        str(source),
+        str(filesystem_path(source)),
     ]
     try:
         completed = runner(
@@ -276,7 +277,7 @@ def probe_audio(
 
 
 def _stat_signature(path: Path) -> tuple[int, int, int, int]:
-    stat = path.stat()
+    stat = filesystem_path(path).stat()
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
@@ -292,7 +293,7 @@ def ingest_file(
     """Register one source, deduplicating byte-identical paths by SHA-256."""
 
     source = Path(path).expanduser().resolve()
-    if not source.is_file():
+    if not filesystem_path(source).is_file():
         raise FileNotFoundError(f"not a regular file: {source}")
     before = _stat_signature(source)
     digest = sha256_file(source)
@@ -361,15 +362,27 @@ def discover_audio_files(
     discovered: dict[str, Path] = {}
     for supplied in paths:
         path = Path(supplied).expanduser().resolve()
-        if path.is_file():
+        filesystem_root = filesystem_path(path)
+        if filesystem_root.is_file():
             if path.suffix.lower() in AUDIO_EXTENSIONS:
                 discovered[str(path)] = path
             continue
-        if not path.is_dir():
+        if not filesystem_root.is_dir():
             raise FileNotFoundError(path)
-        iterator = path.rglob("*") if recursive else path.glob("*")
-        for candidate in iterator:
-            if candidate.is_file() and candidate.suffix.lower() in AUDIO_EXTENSIONS:
+        filesystem_tree_root = filesystem_tree_path(path)
+        iterator = (
+            filesystem_tree_root.rglob("*")
+            if recursive
+            else filesystem_tree_root.glob("*")
+        )
+        for filesystem_candidate in iterator:
+            if (
+                filesystem_candidate.is_file()
+                and filesystem_candidate.suffix.lower() in AUDIO_EXTENSIONS
+            ):
+                candidate = path / filesystem_candidate.relative_to(
+                    filesystem_tree_root
+                )
                 resolved = candidate.resolve()
                 discovered[str(resolved)] = resolved
     return sorted(discovered.values(), key=lambda item: str(item).casefold())

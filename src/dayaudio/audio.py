@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .cas import digest_json, sha256_file
+from .paths import filesystem_path, filesystem_tree_path
 from .types import AudioBlock
 
 
@@ -83,7 +84,7 @@ class BlockRange:
 def read_wav_info(path: str | os.PathLike[str]) -> WavInfo:
     source = Path(path)
     try:
-        with wave.open(str(source), "rb") as handle:
+        with wave.open(str(filesystem_path(source)), "rb") as handle:
             if handle.getcomptype() != "NONE":
                 raise AudioDecodeError(f"compressed WAV is not canonical PCM: {source}")
             sample_rate = handle.getframerate()
@@ -181,21 +182,32 @@ def decode_audio(
 
     source_path = Path(source).expanduser().resolve()
     output_path = Path(output).expanduser().resolve()
-    if not source_path.is_file():
+    filesystem_source = filesystem_path(source_path)
+    filesystem_output = filesystem_path(output_path)
+    if not filesystem_source.is_file():
         raise FileNotFoundError(f"not a regular file: {source_path}")
-    if source_path == output_path:
+    comparison_source = filesystem_path(source_path, force_extended=True)
+    comparison_output = filesystem_path(output_path, force_extended=True)
+    same_spelling = os.path.normcase(os.path.normpath(comparison_source)) == os.path.normcase(
+        os.path.normpath(comparison_output)
+    )
+    same_file = filesystem_output.exists() and os.path.samefile(
+        filesystem_source, filesystem_output
+    )
+    if same_spelling or same_file:
         raise ValueError("source and output paths must differ")
-    if output_path.exists() and not overwrite:
+    if filesystem_output.exists() and not overwrite:
         raise FileExistsError(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filesystem_output_parent = filesystem_tree_path(output_path.parent)
+    filesystem_output_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+        prefix=".audio-", suffix=".tmp", dir=filesystem_output_parent
     )
     os.close(descriptor)
     temporary_path = Path(temporary_name)
     command = ffmpeg_decode_command(
-        source_path,
+        filesystem_source,
         temporary_path,
         ffmpeg_bin=ffmpeg_bin,
         sample_rate=sample_rate,
@@ -229,12 +241,12 @@ def decode_audio(
             )
         with temporary_path.open("r+b") as handle:
             os.fsync(handle.fileno())
-        os.replace(temporary_path, output_path)
-        _fsync_directory(output_path.parent)
+        os.replace(temporary_path, filesystem_output)
+        _fsync_directory(filesystem_output_parent)
         return DecodedAudio(
             path=output_path,
             sha256=sha256_file(output_path),
-            size_bytes=output_path.stat().st_size,
+            size_bytes=filesystem_output.stat().st_size,
             sample_rate=info.sample_rate,
             channels=info.channels,
             sample_width=info.sample_width,
@@ -300,7 +312,7 @@ def iter_block_ranges(
 
 def _hash_wav_frames(path: Path, start_sample: int, end_sample: int) -> str:
     digest = hashlib.sha256()
-    with wave.open(str(path), "rb") as handle:
+    with wave.open(str(filesystem_path(path)), "rb") as handle:
         handle.setpos(start_sample)
         remaining = end_sample - start_sample
         while remaining > 0:

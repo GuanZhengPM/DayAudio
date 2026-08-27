@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from dayaudio.paths import filesystem_path
 from dayaudio.profiles import HardwareFacts, HardwareProfile, get_profile
 
 
@@ -240,7 +241,9 @@ def run_doctor(
         resolved = None
         if executable:
             candidate = Path(executable)
-            resolved = str(candidate) if candidate.is_file() else which(executable)
+            resolved = (
+                str(candidate) if filesystem_path(candidate).is_file() else which(executable)
+            )
         probes.append(
             ProbeResult(
                 "asr-command",

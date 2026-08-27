@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Support extended-length Windows filesystem paths internally while keeping
+  persisted paths and command-adapter arguments in conventional form.
+- Make concurrent CAS publication deterministic on Windows and verify the
+  winning object instead of surfacing transient sharing violations.
+
 ## 0.2.0 - 2026-08-26
 
 - Portable SQLite/WAL and content-addressed task engine.

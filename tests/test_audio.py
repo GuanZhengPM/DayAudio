@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 import wave
 from pathlib import Path
@@ -17,6 +18,7 @@ from dayaudio.audio import (
     iter_block_ranges,
     read_wav_info,
 )
+from dayaudio.paths import filesystem_path
 
 
 def write_wav(path: Path, *, sample_rate: int, frames: int, channels: int = 1) -> None:
@@ -103,6 +105,73 @@ def test_failed_decode_does_not_replace_existing_output(tmp_path: Path) -> None:
     with pytest.raises(AudioDecodeError):
         decode_audio(source, output, runner=runner, overwrite=True)
     assert output.read_bytes() == b"existing"
+
+
+def test_decode_rejects_hard_link_to_source(tmp_path: Path) -> None:
+    source = tmp_path / "input.fake"
+    source.write_bytes(b"container")
+    alias = tmp_path / "alias.fake"
+    os.link(source, alias)
+
+    with pytest.raises(ValueError, match="must differ"):
+        decode_audio(source, alias, runner=lambda *_args, **_kwargs: None, overwrite=True)
+
+    assert source.read_bytes() == b"container"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="extended path aliases are Windows-specific")
+def test_decode_rejects_extended_path_alias_to_source(tmp_path: Path) -> None:
+    source = tmp_path / "input.fake"
+    source.write_bytes(b"container")
+    alias = filesystem_path(source, force_extended=True)
+
+    with pytest.raises(ValueError, match="must differ"):
+        decode_audio(source, alias, runner=lambda *_args, **_kwargs: None, overwrite=True)
+
+    assert source.read_bytes() == b"container"
+
+
+def test_decode_installs_to_path_beyond_max_path(
+    tmp_path: Path, long_path_root: Path
+) -> None:
+    source = tmp_path / "input.fake"
+    source.write_bytes(b"container")
+    output = long_path_root / "audio" / "decoded.wav"
+    assert len(str(output)) > 260
+
+    def runner(command, **kwargs):
+        write_wav(Path(command[-1]), sample_rate=16_000, frames=1_600)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    decoded = decode_audio(source, output, runner=runner)
+    assert decoded.path == output
+    assert decoded.sample_count == 1_600
+    assert read_wav_info(output).duration_seconds == 0.1
+
+
+def test_decode_forces_extended_parent_for_near_threshold_temporary_file(
+    tmp_path: Path,
+    near_path_root: Path,
+) -> None:
+    source = tmp_path / "input.fake"
+    source.write_bytes(b"container")
+    root_units = len(os.path.abspath(near_path_root).encode("utf-16-le")) // 2
+    output_parent = near_path_root / ("p" * (241 - root_units - 1))
+    output = output_parent / "o.wav"
+    assert len(os.path.abspath(output).encode("utf-16-le")) // 2 < 248
+    assert (
+        len(os.path.abspath(output_parent).encode("utf-16-le")) // 2
+        + len("\\.audio-xxxxxxxx.tmp")
+        > 260
+    )
+
+    def runner(command, **kwargs):
+        write_wav(Path(command[-1]), sample_rate=16_000, frames=1_600)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    decoded = decode_audio(source, output, runner=runner)
+    assert decoded.path == output
+    assert read_wav_info(output).duration_seconds == 0.1
 
 
 def test_decode_command_rejects_invalid_format() -> None:

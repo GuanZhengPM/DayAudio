@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import socket
 import threading
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from dayaudio.adapters.base import AsrBackend, close_all
+from dayaudio.paths import filesystem_path
 from dayaudio.router import (
     CascadeDecision,
     CascadePolicy,
@@ -27,6 +29,28 @@ from dayaudio.router import (
     detect_anomalies,
 )
 from dayaudio.types import AsrSegment, AudioBlock
+
+
+def _filesystem_identity(path: str | Path) -> str:
+    """Return a stable comparison key for conventional and namespaced paths."""
+
+    value = filesystem_path(path, force_extended=True)
+    try:
+        value = value.resolve()
+    except (OSError, RuntimeError):
+        pass
+    return os.path.normcase(os.path.normpath(str(value)))
+
+
+def _same_filesystem_entry(left: str | Path, right: str | Path) -> bool:
+    if _filesystem_identity(left) == _filesystem_identity(right):
+        return True
+    try:
+        return filesystem_path(left, force_extended=True).samefile(
+            filesystem_path(right, force_extended=True)
+        )
+    except OSError:
+        return False
 
 
 class PipelineError(RuntimeError):
@@ -114,7 +138,7 @@ def _digestable(value: Any) -> Any:
         resolved = value.expanduser().resolve()
         descriptor: dict[str, Any] = {"path": str(resolved)}
         try:
-            stat = resolved.stat()
+            stat = filesystem_path(resolved).stat()
         except OSError:
             descriptor["exists"] = False
         else:
@@ -155,24 +179,28 @@ def _digestable(value: Any) -> Any:
 
 def _content_path_descriptor(path: Path) -> dict[str, Any] | None:
     resolved = path.expanduser().resolve()
-    if resolved.is_file():
+    # A model root can be below MAX_PATH while one of its descendants is not.
+    filesystem_resolved = filesystem_path(resolved, force_extended=True)
+    if filesystem_resolved.is_file():
         from dayaudio.cas import sha256_file
 
-        stat = resolved.stat()
+        stat = filesystem_resolved.stat()
         return {
             "path": str(resolved),
             "kind": "file",
             "size_bytes": stat.st_size,
             "sha256": sha256_file(resolved),
         }
-    if resolved.is_dir():
+    if filesystem_resolved.is_dir():
         from dayaudio.cas import sha256_file
 
         digest = hashlib.sha256()
         count = 0
         total = 0
-        for child in sorted(item for item in resolved.rglob("*") if item.is_file()):
-            relative = child.relative_to(resolved).as_posix()
+        for child in sorted(
+            item for item in filesystem_resolved.rglob("*") if item.is_file()
+        ):
+            relative = child.relative_to(filesystem_resolved).as_posix()
             child_size = child.stat().st_size
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
@@ -208,7 +236,8 @@ def _backend_local_inputs(backend: AsrBackend) -> list[dict[str, Any]]:
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = cwd / path
-        if path.is_file() or path.is_dir():
+        filesystem_candidate = filesystem_path(path)
+        if filesystem_candidate.is_file() or filesystem_candidate.is_dir():
             candidates.append(path)
 
     consider(getattr(backend, "model_id", None))
@@ -769,7 +798,9 @@ class ResumablePipeline:
         else:
             database_path = Path(storage_path).expanduser().resolve()
             marker_root = database_path.parent / "work" / "pipeline_manifests"
-            marker_path_value = marker_root / f"{result.task_key}.{digest}.json"
+            # Lowercase hex remains one-to-one on case-insensitive filesystems
+            # and avoids repeating the long task key in the filename.
+            marker_path_value = marker_root / f"{digest}.json"
             from dayaudio.cas import atomic_write_bytes
 
             atomic_write_bytes(marker_path_value, encoded)
@@ -788,23 +819,30 @@ class ResumablePipeline:
                 list_artifacts = getattr(self.storage, "list_artifacts", None)
                 if list_artifacts is not None:
                     remaining_records = list(_supported_call(list_artifacts) or ())
-                referenced_paths = {
-                    str(self._artifact_value(item, "path") or "")
+                referenced_paths = [
+                    Path(value)
                     for item in remaining_records
-                }
-                safe_root = marker_root.resolve()
+                    if (value := str(self._artifact_value(item, "path") or ""))
+                ]
+                safe_root = filesystem_path(marker_root, force_extended=True).resolve()
                 for old in removed:
                     old_path_text = str(self._artifact_value(old, "path") or "")
-                    if not old_path_text or old_path_text == marker_path:
+                    if not old_path_text:
                         continue
                     old_path = Path(old_path_text)
+                    if _same_filesystem_entry(old_path, marker_path_value):
+                        continue
                     try:
-                        safe = old_path.resolve().is_relative_to(safe_root)
+                        safe_path = filesystem_path(old_path, force_extended=True).resolve()
+                        safe = safe_path.is_relative_to(safe_root)
                     except (OSError, ValueError):
                         safe = False
-                    if safe and old_path_text not in referenced_paths:
+                    if safe and not any(
+                        _same_filesystem_entry(old_path, reference)
+                        for reference in referenced_paths
+                    ):
                         try:
-                            old_path.unlink()
+                            safe_path.unlink()
                         except FileNotFoundError:
                             pass
         artifact_metadata = dict(manifest)
@@ -878,7 +916,7 @@ class ResumablePipeline:
                 if storage_path is not None and str(storage_path) != ":memory:":
                     continue
             else:
-                path = Path(marker_path)
+                path = filesystem_path(marker_path)
                 try:
                     marker_bytes = path.read_bytes()
                 except OSError:
@@ -999,7 +1037,7 @@ class ResumablePipeline:
         cancelled: Callable[[], bool] | None = None,
     ) -> PipelineResult:
         path = Path(audio_path)
-        if not path.is_file():
+        if not filesystem_path(path).is_file():
             raise FileNotFoundError(path)
         sensitive = {str(value) for value in summary_sensitive_segment_ids}
         key = task_key or self.task_key(

@@ -20,5 +20,11 @@ as local paths.
 Windows installs the `tzdata` package so explicit IANA zones work without a
 system timezone database.
 
+On Windows, DayAudio converts paths to extended-length filesystem syntax only
+at internal I/O boundaries when they approach the legacy `MAX_PATH` limit.
+Configuration values, database records, logs, return values, and paths passed
+to command adapters remain in conventional Windows form. This does not change
+the locking or atomic-rename guarantees of the underlying filesystem.
+
 Do not place a workspace on an unreliable network/removable filesystem unless
 SQLite locking and artifact atomicity have been validated there.

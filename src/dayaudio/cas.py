@@ -16,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 
+from dayaudio.paths import filesystem_path, filesystem_tree_path
+
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 CAS_FILE_MODE = 0o600 if os.name == "nt" else 0o400
 
@@ -38,9 +40,10 @@ def sha256_file(path: str | os.PathLike[str], chunk_size: int = DEFAULT_CHUNK_SI
     """Hash a regular file using bounded memory."""
 
     source = Path(path)
-    if not source.is_file():
+    filesystem_source = filesystem_path(source)
+    if not filesystem_source.is_file():
         raise FileNotFoundError(f"not a regular file: {source}")
-    with source.open("rb") as handle:
+    with filesystem_source.open("rb") as handle:
         return sha256_stream(handle, chunk_size=chunk_size)
 
 
@@ -98,20 +101,27 @@ def atomic_write_bytes(
     """Durably replace *path* with *data* using a same-directory rename."""
 
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The target itself may still be below MAX_PATH while the generated
+    # same-directory temporary filename crosses it.
+    filesystem_target = filesystem_path(target, force_extended=True)
+    filesystem_target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False
+            mode="wb",
+            prefix=".atomic-",
+            suffix=".tmp",
+            dir=filesystem_target.parent,
+            delete=False,
         ) as handle:
             temporary_name = handle.name
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary_name, mode)
-        os.replace(temporary_name, target)
+        os.replace(temporary_name, filesystem_target)
         temporary_name = None
-        _fsync_directory(target.parent)
+        _fsync_directory(filesystem_target.parent)
         return target
     finally:
         if temporary_name is not None:
@@ -144,7 +154,7 @@ class ContentAddressedStore:
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.root = Path(root).expanduser().resolve()
         self.object_root = self.root / "sha256"
-        self.object_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        filesystem_path(self.object_root).mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name != "nt":
             os.chmod(self.root, 0o700)
             os.chmod(self.object_root, 0o700)
@@ -162,30 +172,97 @@ class ContentAddressedStore:
 
     def exists(self, sha256: str, *, verify: bool = False) -> bool:
         path = self.path_for(sha256)
-        if not path.is_file():
+        if not filesystem_path(path).is_file():
             return False
         return not verify or sha256_file(path) == sha256.lower()
 
     def get(self, sha256: str, *, verify: bool = False) -> CASObject:
         digest = self._validate_digest(sha256)
         path = self.path_for(digest)
-        if not path.is_file():
+        filesystem_object = filesystem_path(path)
+        if not filesystem_object.is_file():
             raise FileNotFoundError(f"CAS object does not exist: {digest}")
         if verify and sha256_file(path) != digest:
             raise OSError(f"CAS integrity check failed: {digest}")
-        return CASObject(digest, path, path.stat().st_size)
+        return CASObject(digest, path, filesystem_object.stat().st_size)
+
+    def _install_staged_file(
+        self,
+        temporary_name: str,
+        target: Path,
+        *,
+        digest: str,
+        size: int,
+    ) -> tuple[CASObject, bool]:
+        """Atomically install a completed CAS staging file.
+
+        Windows ``os.replace`` can race with another caller that is verifying
+        the same destination and surface ``PermissionError``.  ``os.rename``
+        instead elects one writer without replacing an existing immutable
+        object.  Losing writers verify and reuse the winner.  POSIX retains the
+        original replace behavior.
+
+        The boolean result says whether this method consumed the staging path.
+        """
+
+        filesystem_target = filesystem_path(target, force_extended=True)
+        filesystem_target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(temporary_name, CAS_FILE_MODE)
+        try:
+            if os.name == "nt":
+                os.rename(temporary_name, filesystem_target)
+            else:
+                os.replace(temporary_name, filesystem_target)
+        except (FileExistsError, PermissionError) as error:
+            if os.name != "nt":
+                raise
+            try:
+                existing = self.get(digest, verify=True)
+            except FileNotFoundError:
+                raise error
+            if existing.size_bytes != size:
+                raise OSError(f"CAS size mismatch: {digest}")
+            return existing, False
+        _fsync_directory(filesystem_target.parent)
+        return CASObject(digest, target, size), True
 
     def put_bytes(self, data: bytes | bytearray | memoryview) -> CASObject:
         raw = bytes(data)
         digest = hashlib.sha256(raw).hexdigest()
         target = self.path_for(digest)
-        if target.exists():
+        if filesystem_path(target).exists():
             existing = self.get(digest, verify=True)
             if existing.size_bytes != len(raw):  # defensive; SHA match already checked
                 raise OSError(f"CAS size mismatch: {digest}")
             return existing
-        atomic_write_bytes(target, raw, mode=CAS_FILE_MODE)
-        return CASObject(digest, target, len(raw))
+
+        filesystem_parent = filesystem_path(target.parent, force_extended=True)
+        filesystem_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary_name: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".cas-",
+                suffix=".tmp",
+                dir=filesystem_parent,
+                delete=False,
+            ) as handle:
+                temporary_name = handle.name
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            result, consumed = self._install_staged_file(
+                temporary_name, target, digest=digest, size=len(raw)
+            )
+            if consumed:
+                temporary_name = None
+            return result
+        finally:
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
 
     def put_json(self, value: Any) -> CASObject:
         return self.put_bytes(canonical_json_bytes(value))
@@ -199,19 +276,25 @@ class ContentAddressedStore:
         """Copy *source* into the CAS while hashing it in one streaming pass."""
 
         source_path = Path(source)
-        if not source_path.is_file():
+        filesystem_source = filesystem_path(source_path)
+        if not filesystem_source.is_file():
             raise FileNotFoundError(f"not a regular file: {source_path}")
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
 
         staging = self.object_root / ".staging"
-        staging.mkdir(parents=True, exist_ok=True, mode=0o700)
+        filesystem_staging = filesystem_path(staging, force_extended=True)
+        filesystem_staging.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary_name: str | None = None
         digest = hashlib.sha256()
         size = 0
         try:
-            with source_path.open("rb") as source_handle, tempfile.NamedTemporaryFile(
-                mode="wb", prefix="object.", suffix=".tmp", dir=staging, delete=False
+            with filesystem_source.open("rb") as source_handle, tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".cas-",
+                suffix=".tmp",
+                dir=filesystem_staging,
+                delete=False,
             ) as target_handle:
                 temporary_name = target_handle.name
                 while True:
@@ -226,18 +309,21 @@ class ContentAddressedStore:
 
             hexdigest = digest.hexdigest()
             target = self.path_for(hexdigest)
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if target.exists():
+            filesystem_path(target.parent, force_extended=True).mkdir(
+                parents=True, exist_ok=True, mode=0o700
+            )
+            if filesystem_path(target).exists():
                 existing = self.get(hexdigest, verify=True)
                 if existing.size_bytes != size:
                     raise OSError(f"CAS size mismatch: {hexdigest}")
                 return existing
 
-            os.chmod(temporary_name, CAS_FILE_MODE)
-            os.replace(temporary_name, target)
-            temporary_name = None
-            _fsync_directory(target.parent)
-            return CASObject(hexdigest, target, size)
+            result, consumed = self._install_staged_file(
+                temporary_name, target, digest=hexdigest, size=size
+            )
+            if consumed:
+                temporary_name = None
+            return result
         finally:
             if temporary_name is not None:
                 try:
@@ -249,11 +335,21 @@ class ContentAddressedStore:
         return self.exists(sha256, verify=True)
 
     def iter_objects(self) -> Iterable[CASObject]:
-        if not self.object_root.exists():
+        filesystem_root = filesystem_tree_path(self.object_root)
+        if not filesystem_root.exists():
             return
-        for path in self.object_root.glob("[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*"):
-            if path.is_file() and len(path.name) == 64:
-                yield CASObject(path.name, path, path.stat().st_size)
+        for path in filesystem_root.glob("[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/*"):
+            if not path.is_file():
+                continue
+            try:
+                digest = self._validate_digest(path.name)
+            except ValueError:
+                continue
+            if path.name != digest:
+                continue
+            if path.parent.name != digest[2:4] or path.parent.parent.name != digest[:2]:
+                continue
+            yield CASObject(digest, self.path_for(digest), path.stat().st_size)
 
 
 CASStore = ContentAddressedStore
