@@ -2,6 +2,8 @@
 
 The dated physical-Mac result is recorded in
 [validation-macos.md](validation-macos.md).
+The dated physical-Windows core/storage result is recorded in
+[validation-windows.md](validation-windows.md).
 
 ## Core
 
@@ -32,6 +34,12 @@ The dated physical-Mac result is recorded in
 
 - Physical Apple Silicon end-to-end run.
 - Core tests on macOS, Linux, and Windows CI.
+- Physical Windows x86-64 core/storage run: 141 tests pass and one optional
+  FFmpeg/FFprobe test is skipped; extended paths work with
+  `LongPathsEnabled=0`, and targeted SQLite/WAL, completion-marker, model-tree,
+  and same-process threaded-CAS cases pass.
+- The Windows result above is core/storage acceptance, not built-in model
+  accuracy, throughput, or profile acceptance.
 - Target-hardware acceptance before publishing NVIDIA/OpenVINO/Vulkan speed.
 
 ## Privacy

@@ -42,9 +42,11 @@ ingest → canonical decode/chunks → fast ASR → speaker/owner annotations
 
 ## v0.2 support labels
 
-- Verified: Apple Silicon macOS, standard-library core, FFmpeg ingestion.
+- Verified: Apple Silicon macOS model path; standard-library core and FFmpeg
+  ingestion; Windows x86-64 core/storage including extended paths, SQLite/WAL,
+  and same-process threaded CAS publication.
 - Implemented, hardware acceptance pending: NVIDIA CUDA profiles, Windows
-  OpenVINO/Vulkan profiles, and x86 CPU profiles.
+  OpenVINO/Vulkan profiles, and x86 CPU model-inference profiles.
 - Experimental: automatic strong-ASR routing and cross-file owner candidates.
 - Deliberately absent: microphone capture, cloud accounts, automatic identity
   merges, and a desktop GUI.

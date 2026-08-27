@@ -65,17 +65,21 @@ Model weights are supplied separately and retain their upstream licenses. See
 
 ### Hardware status
 
-| Profile | Status | Current scope |
+| Profile / platform | Status | Current scope |
 |---|---|---|
 | Apple Silicon macOS | Physically verified | CPU SenseVoice/FSMN/CAM++ end-to-end path |
+| Windows x86-64 core/storage | Physically verified | Ryzen 5 5600GT host; extended paths with `LongPathsEnabled=0`, SQLite/WAL, and same-process threaded CAS publication; 141 passed, 1 skipped |
 | Portable CPU | Implemented; acceptance pending | Low-memory single-worker profile |
 | NVIDIA CUDA | Implemented; acceptance pending | Single consumer-GPU worker profile |
 | Windows OpenVINO | Implemented; acceptance pending | Command-runtime profile for Intel CPU/iGPU |
 | Windows Vulkan | Implemented; acceptance pending | Command-runtime profile |
 
-The physical Mac result, model hashes, generated fixture hash, timings, and
-limitations are recorded in
-[docs/validation-macos.md](docs/validation-macos.md).
+The physical Mac model result is recorded in
+[docs/validation-macos.md](docs/validation-macos.md). The Windows core/storage
+result and its claim boundary are recorded in
+[docs/validation-windows.md](docs/validation-windows.md). Core/storage
+verification does not imply model accuracy, throughput, or acceptance of the
+CPU, OpenVINO, or Vulkan inference profiles.
 
 ### Prerequisites
 
@@ -267,16 +271,18 @@ SQLite/WAL 保存任务状态、租约、重试、取消和完成清单。可序
 
 ### 硬件状态
 
-| 配置 | 状态 | 当前范围 |
+| 配置 / 平台 | 状态 | 当前范围 |
 |---|---|---|
 | Apple Silicon macOS | 已完成物理验证 | CPU 版 SenseVoice/FSMN/CAM++ 端到端流程 |
+| Windows x86-64 核心/存储 | 已完成物理机验证 | Ryzen 5 5600GT 主机；`LongPathsEnabled=0` 下的扩展路径、SQLite/WAL 与同进程多线程 CAS 并发发布；141 通过、1 跳过 |
 | 通用 CPU | 已实现，待目标硬件验收 | 低内存单工作进程配置 |
 | NVIDIA CUDA | 已实现，待目标硬件验收 | 单消费级 GPU 工作进程配置 |
 | Windows OpenVINO | 已实现，待目标硬件验收 | 面向 Intel CPU/核显的命令运行时配置 |
 | Windows Vulkan | 已实现，待目标硬件验收 | 命令运行时配置 |
 
-Mac 物理验证使用的模型哈希、生成样本哈希、耗时和限制记录在
-[docs/validation-macos.md](docs/validation-macos.md)。
+Mac 模型物理验证记录在
+[docs/validation-macos.md](docs/validation-macos.md)，Windows 核心/存储验证及其结论边界记录在
+[docs/validation-windows.md](docs/validation-windows.md)。核心/存储通过不代表模型准确率、吞吐量或 CPU、OpenVINO、Vulkan 推理配置已经完成验收。
 
 ### 环境要求
 

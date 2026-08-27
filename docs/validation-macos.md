@@ -80,8 +80,10 @@ init -> CAS ingest -> canonical PCM -> SenseVoice/FSMN ASR
 
 This validates the v0.2 software path on one physical Mac. It is not a WER,
 DER, speaker-clustering-accuracy, owner-verification, 1000-hour scalability, or
-Windows/NVIDIA acceptance result. The earlier 34.3-hour CPU prototype run is
-useful component evidence but predates this repository and is not counted as
-v0.2 end-to-end acceptance. NVIDIA, OpenVINO, Vulkan, Linux, and Windows
-profiles remain implemented but hardware-unverified until their target suites
-run on physical machines.
+Windows/NVIDIA model-acceptance result. The earlier 34.3-hour CPU prototype run
+is useful component evidence but predates this repository and is not counted
+as v0.2 end-to-end acceptance. Windows core/storage has since been verified on
+a physical host as documented in
+[validation-windows.md](validation-windows.md). NVIDIA, OpenVINO, Vulkan, Linux,
+and Windows CPU model-inference profiles remain hardware-unverified until their
+target suites run on physical machines.

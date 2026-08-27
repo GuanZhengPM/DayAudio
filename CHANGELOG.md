@@ -6,6 +6,8 @@
   persisted paths and command-adapter arguments in conventional form.
 - Make concurrent CAS publication deterministic on Windows and verify the
   winning object instead of surfacing transient sharing violations.
+- Document physical Windows core/storage validation with legacy long-path
+  support disabled, while keeping model-inference profile claims separate.
 
 ## 0.2.0 - 2026-08-26
 

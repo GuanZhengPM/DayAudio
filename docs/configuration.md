@@ -25,6 +25,8 @@ at internal I/O boundaries when they approach the legacy `MAX_PATH` limit.
 Configuration values, database records, logs, return values, and paths passed
 to command adapters remain in conventional Windows form. This does not change
 the locking or atomic-rename guarantees of the underlying filesystem.
+The physical-host regression scope is recorded in
+[validation-windows.md](validation-windows.md).
 
 Do not place a workspace on an unreliable network/removable filesystem unless
 SQLite locking and artifact atomicity have been validated there.
