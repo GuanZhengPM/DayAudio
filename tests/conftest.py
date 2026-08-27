@@ -35,7 +35,10 @@ def long_path_root(tmp_path: Path):
 def near_path_root():
     """Create a conventional root whose descendants cross legacy MAX_PATH."""
 
-    anchor = Path(tempfile.mkdtemp(prefix="dayaudio-near-"))
+    # tempfile may return an alias such as /var on macOS or RUNNER~1 on
+    # Windows.  Production path handling resolves those aliases, so build the
+    # threshold fixture from the canonical spelling as well.
+    anchor = Path(tempfile.mkdtemp(prefix="dayaudio-near-")).resolve()
     current = anchor
     while True:
         length = len(os.path.abspath(current).encode("utf-16-le")) // 2
